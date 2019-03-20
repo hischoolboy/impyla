@@ -27,7 +27,7 @@ from bitarray import bitarray
 
 from impala.compat import Decimal
 from impala.util import get_logger_and_init_null
-from impala.interface import Connection, Cursor, _bind_parameters
+from impala.interface import Connection, Cursor, _bind_parameters, RE_INSERT_VALUES
 from impala.error import (NotSupportedError, OperationalError,
                           ProgrammingError, HiveServer2Error)
 from impala._thrift_api import (
@@ -434,14 +434,42 @@ class HiveServer2Cursor(Cursor):
             return 0.5
         return 1.0
 
-    def executemany(self, operation, seq_of_parameters):
+    def _rewrite_as_bulk_insert(self, operation, seq_of_parameters):
+        """
+        Builds and executes one big INSERT...VALUES statement instead of sending
+        sequence of one-row inserts.
+        Assumes that `operation` is INSERT...VALUES statement.
+        Returns `True` if operation was executed and `False` otherwise.
+        INSERT...VALUES is available in Impala and multiple row inserts are
+        supported.
+        """
+        match = RE_INSERT_VALUES.match(operation)
+        if match and seq_of_parameters and len(seq_of_parameters) > 1:
+            # Split "INSERT...VALUES (...)" query into
+            query_left = match.group(1)  # "INSERT...VALUES"
+            values = match.group(2)  # "(...)"
+
+            bound_params = [_bind_parameters(values, params)
+                            for params in seq_of_parameters]
+            # Build "big" query: "INSERT...VALUES (...), (...), (...), ..."
+            # operation = query_left + ", ".join(bound_params)
+            return query_left + ", ".join(bound_params)
+        return None
+
+    def executemany(self, operation, seq_of_parameters, rewrite_as_bulk_insert=False):
         # PEP 249
         log.debug('Attempting to execute %s queries', len(seq_of_parameters))
-        for parameters in seq_of_parameters:
-            self.execute(operation, parameters)
-            if self.has_result_set:
-                raise ProgrammingError("Operations that have result sets are "
-                                       "not allowed with executemany.")
+
+        if rewrite_as_bulk_insert:
+            operation = self._rewrite_as_bulk_insert(operation, seq_of_parameters)
+
+            self.execute(operation, None)
+        else:
+            for parameters in seq_of_parameters:
+                self.execute(operation, parameters)
+                if self.has_result_set:
+                    raise ProgrammingError("Operations that have result sets are "
+                                           "not allowed with executemany.")
 
     def fetchone(self):
         # PEP 249
@@ -757,12 +785,12 @@ def connect(host, port, timeout=None, use_ssl=False, ca_cert=None,
     log.debug('Connecting to HiveServer2 %s:%s with %s authentication '
               'mechanism', host, port, auth_mechanism)
     sock = get_socket(host, port, use_ssl, ca_cert)
-    
+
     if krb_host:
         kerberos_host = krb_host
     else:
         kerberos_host = host
-    
+
     if timeout is not None:
         timeout = timeout * 1000.  # TSocket expects millis
     if six.PY2:

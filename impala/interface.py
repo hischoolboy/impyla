@@ -26,6 +26,8 @@ from impala.error import (  # pylint: disable=unused-import
     OperationalError, ProgrammingError, IntegrityError, DataError,
     NotSupportedError)
 
+RE_INSERT_VALUES = re.compile(r"(.*\binsert\b.*\bvalues\b\s*)(\(.*\))\s*;?\s*", flags=re.IGNORECASE)
+
 
 class Connection(object):
     # PEP 249
@@ -214,15 +216,15 @@ def _replace_numeric_markers(operation, string_parameters):
         return op
 
     # replace qmark parameters and format parameters
-    operation = replace_markers('?', operation, string_parameters)
+    # operation = replace_markers('?', operation, string_parameters)
     operation = replace_markers(r'%s', operation, string_parameters)
 
     # replace numbered parameters
     # Go through them backwards so smaller numbers don't replace
     # parts of larger ones
-    for index in range(len(string_parameters), 0, -1):
-        operation = operation.replace(':' + str(index),
-                                      string_parameters[index - 1])
+    # for index in range(len(string_parameters), 0, -1):
+    #     operation = operation.replace(':' + str(index),
+    #                                   string_parameters[index - 1])
     return operation
 
 
